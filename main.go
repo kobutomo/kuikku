@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 )
@@ -20,19 +19,21 @@ type InitialPacket struct {
 	TokenLength                   uint64
 	Token                         []byte
 	Length                        uint64
-	PacketNumber                  uint64
+	PacketNumber                  []byte
 	PacketPayload                 []byte
 	PacketNumberIndex             uint64
+	RawHeader                     []byte
 }
 
 func (ip InitialPacket) String() string {
 	var str = "================== PACKET =====================\n"
+	str += "------------------- HEADER -------------------\n"
 	str += fmt.Sprintf("Header Form: %d\n", ip.HeaderForm)
 	str += fmt.Sprintf("Fixed Bit: %d\n", ip.FixedBit)
 	str += fmt.Sprintf("Long Packet Type: %d\n", ip.LongPacketType)
 	str += fmt.Sprintf("Reserved Bits: %d\n", ip.ReservedBits)
 	str += fmt.Sprintf("Packet Number Length: %d\n", ip.PacketNumberLength)
-	str += fmt.Sprintf("Version: %d\n", binary.BigEndian.Uint32(ip.Version))
+	str += fmt.Sprintf("Version: %d\n", convertBytesToInteger(ip.Version))
 	str += fmt.Sprintf("Destination Connection ID Length: %d\n", ip.DestinationConnectionIDLength)
 	str += fmt.Sprintf("Destination Connection ID: %x\n", ip.DestinationConnectionID)
 	str += fmt.Sprintf("Source Connection ID Length: %d\n", ip.SourceConnectionIDLength)
@@ -40,35 +41,60 @@ func (ip InitialPacket) String() string {
 	str += fmt.Sprintf("Token Length: %d\n", ip.TokenLength)
 	str += fmt.Sprintf("Token: %s\n", hex.EncodeToString(ip.Token))
 	str += fmt.Sprintf("Length: %d byte\n", ip.Length)
-	str += fmt.Sprintf("Packet Number: %d\n", ip.PacketNumber)
-	str += fmt.Sprintf("Packet Payload: %x\n", ip.PacketPayload)
+	str += fmt.Sprintf("Packet Number: %d\n", convertBytesToInteger(ip.PacketNumber))
+	str += "-----------------  PAYLOAD -----------------\n"
+	str += fmt.Sprintf("%x\n", ip.PacketPayload)
 
 	return str
 }
 
 func main() {
+	sampleImput := input
 	initialSalt, _ := hex.DecodeString("38762cf7f55934b34d179ae6a4c80cadccbb7f0a")
-	pnIndex, sample, dcid := getRemoveHeaderProtectionInfoFromRawPacket(input)
-	_, _, hp := getClientKeys(dcid, initialSalt)
+	pnIndex, sample, dcid := getRemoveHeaderProtectionInfoFromRawPacket(sampleImput)
+	clientKey, clientIV, clientHP := getClientKeys(dcid, initialSalt)
 
-	mask := getMask(hp, sample)
-	// mask the header
+	mask := getMask(clientHP, sample)
+	removeHeaderProtection(sampleImput, mask, pnIndex)
+
+	parsedPacket := parsePacket(sampleImput)
+	fmt.Printf("pnIndex: %d\n", pnIndex)
+	fmt.Printf("sample: %x\n", sample)
+	fmt.Printf("mask: %x\n", mask)
+	fmt.Println(parsedPacket)
+	decryptedPacket := decryptPayload(parsedPacket.RawHeader, parsedPacket.PacketPayload, clientIV, clientKey, parsedPacket.PacketNumber)
+	fmt.Println("============= Decrypted Payload =============")
+	fmt.Printf("%x\n", decryptedPacket)
+}
+
+// this changes the input
+func removeHeaderProtection(input, mask []byte, pnIndex uint64) {
+	fmt.Println("============= Removing Header Protection =============")
 	input[0] ^= mask[0] & 0x0f
 	input[pnIndex] ^= mask[1]
 	input[pnIndex+1] ^= mask[2]
 	input[pnIndex+2] ^= mask[3]
 	input[pnIndex+3] ^= mask[4]
+}
 
-	parsedPacket := parsePacket(input)
-	fmt.Printf("pnIndex: %d\n", pnIndex)
-	fmt.Printf("sample: %x\n", sample)
-	fmt.Printf("mask: %x\n", mask)
-	fmt.Println(parsedPacket)
-
+func decryptPayload(header, payload, clientIV, clientKey, packetNumberBytes []byte) []byte {
+	fmt.Println("============= Decrypting Payload =============")
+	lengthDiff := len(clientIV) - len(packetNumberBytes)
+	padding := make([]byte, lengthDiff)
+	fixedPNB := append(padding, packetNumberBytes...)
+	nonce := byteXOR(fixedPNB, clientIV)
+	aad := header
+	data := payload
+	plaintext := decryptAESGCM(clientKey, nonce, aad, data)
+	fmt.Printf("nonce: %x\n", nonce)
+	fmt.Printf("aad: %x\n", aad)
+	fmt.Printf("data: %x\n", data)
+	return plaintext
 }
 
 // the keys protecting the client packets
 func getClientKeys(dcid, initialSalt []byte) (quicKey, quicIV, quicHP []byte) {
+	fmt.Println("============= Generating Client Keys =============")
 	initialSecret := hkdfExtract(dcid, initialSalt)
 	clientInitialSecret := hkdfExpandLabel(initialSecret, []byte("client in"), []byte{}, 32)
 	quicKey = hkdfExpandLabel(clientInitialSecret, []byte("quic key"), []byte{}, 16)
@@ -84,28 +110,26 @@ func getClientKeys(dcid, initialSalt []byte) (quicKey, quicIV, quicHP []byte) {
 }
 
 func parsePacket(input []byte) InitialPacket {
-	/*
-		Initial Packet {
-			Header Form (1) = 1,
-			Fixed Bit (1) = 1,
-			Long Packet Type (2) = 0,
-			Reserved Bits (2),
-			Packet Number Length (2),
-			Version (32),
-			Destination Connection ID Length (8),
-			Destination Connection ID (0..160),
-			Source Connection ID Length (8),
-			Source Connection ID (0..160),
-			Token Length (i),
-			Token (..),
-			Length (i),
-			Packet Number (8..32),
-			Packet Payload (8..),
-		}
-		reference: https://www.rfc-editor.org/rfc/rfc9000#name-initial-packet
-	*/
+	// Initial Packet {
+	// 	Header Form (1) = 1,
+	// 	Fixed Bit (1) = 1,
+	// 	Long Packet Type (2) = 0,
+	// 	Reserved Bits (2),
+	// 	Packet Number Length (2),
+	// 	Version (32),
+	// 	Destination Connection ID Length (8),
+	// 	Destination Connection ID (0..160),
+	// 	Source Connection ID Length (8),
+	// 	Source Connection ID (0..160),
+	// 	Token Length (i),
+	// 	Token (..),
+	// 	Length (i),
+	// 	Packet Number (8..32),
+	// 	Packet Payload (8..),
+	// }
+	// reference: https://www.rfc-editor.org/rfc/rfc9000#name-initial-packet
 	packet := InitialPacket{}
-	var currIndex uint16 = 0
+	var currIndex uint64 = 0
 	// input[0] are flags and would be like 1100_1100
 	packet.HeaderForm = input[currIndex] >> 7           // 1100_1100 >> 7 = 0000_0001
 	packet.FixedBit = (input[currIndex] >> 6) & 1       // 1100_1100 >> 6 = 0000_0011 & 0000_0001 = 0000_0001
@@ -120,91 +144,62 @@ func parsePacket(input []byte) InitialPacket {
 	currIndex += 4
 	packet.DestinationConnectionIDLength = input[currIndex]
 	currIndex++
-	packet.DestinationConnectionID = input[currIndex : currIndex+uint16(packet.DestinationConnectionIDLength)]
-	currIndex += uint16(packet.DestinationConnectionIDLength)
+	packet.DestinationConnectionID = input[currIndex : currIndex+uint64(packet.DestinationConnectionIDLength)]
+	currIndex += uint64(packet.DestinationConnectionIDLength)
 	packet.SourceConnectionIDLength = input[currIndex]
 	currIndex++
-	packet.SourceConnectionID = input[currIndex : currIndex+uint16(packet.SourceConnectionIDLength)]
-	currIndex += uint16(packet.SourceConnectionIDLength)
+	packet.SourceConnectionID = input[currIndex : currIndex+uint64(packet.SourceConnectionIDLength)]
+	currIndex += uint64(packet.SourceConnectionIDLength)
 	// byte[]
 	tokenLengthBytes := getVariableLengthIntegerField(input, currIndex)
 	// 0x3f = 0011_1111
 	// remove 2 most significant bits
-	tokenLengthBytes[0] &= 0x3f
-	packet.TokenLength = convertBytesToInteger(tokenLengthBytes)
-	currIndex += uint16(len(tokenLengthBytes))
-	packet.Token = input[currIndex : currIndex+uint16(packet.TokenLength)]
-	currIndex += uint16(packet.TokenLength)
+	cpTokenLengthBytes := make([]byte, len(tokenLengthBytes))
+	cpTokenLengthBytes[0] &= 0x3f
+	packet.TokenLength = convertBytesToInteger(cpTokenLengthBytes)
+	currIndex += uint64(len(tokenLengthBytes))
+	packet.Token = input[currIndex : currIndex+uint64(packet.TokenLength)]
+	currIndex += uint64(packet.TokenLength)
 	lengthBytes := getVariableLengthIntegerField(input, currIndex)
 	// 0x3f = 0011_1111
 	// remove 2 most significant bits
-	lengthBytes[0] &= 0x3f
-	packet.Length = convertBytesToInteger(lengthBytes)
-	currIndex += uint16(len(lengthBytes))
+	cpLengthBytes := make([]byte, len(lengthBytes))
+	cpLengthBytes[0] &= 0x3f
+	packet.Length = convertBytesToInteger(cpLengthBytes)
+	currIndex += uint64(len(lengthBytes))
 	packet.PacketNumberIndex = uint64(currIndex)
-	packetNumberBytes := input[currIndex : currIndex+uint16(packet.PacketNumberLength)]
-	packet.PacketNumber = convertBytesToInteger(packetNumberBytes)
-	currIndex += uint16(packet.PacketNumberLength)
+	packetNumberBytes := input[currIndex : currIndex+uint64(packet.PacketNumberLength)]
+	packet.PacketNumber = packetNumberBytes
+	currIndex += uint64(packet.PacketNumberLength)
+	packet.RawHeader = input[:currIndex]
 	// this if statement is for debugging
 	if uint64(len(input[currIndex:])) > packet.Length-uint64(packet.PacketNumberLength) {
-		packet.PacketPayload = input[currIndex : currIndex+uint16(packet.Length)-uint16(packet.PacketNumberLength)]
+		packet.PacketPayload = input[currIndex : currIndex+uint64(packet.Length)-uint64(packet.PacketNumberLength)]
 	} else {
 		packet.PacketPayload = input[currIndex:]
 	}
 	return packet
 }
 
-func getRemoveHeaderProtectionInfoFromRawPacket(input []byte) (pnIndex int64, sample, dcid []byte) {
+func getRemoveHeaderProtectionInfoFromRawPacket(input []byte) (pnIndex uint64, sample, dcid []byte) {
 	const sampleLength = 16
-	var currIndex uint16 = 0
+	var currIndex uint64 = 0
 	currIndex++
 	currIndex += 4
 	destinationConnectionIDLength := input[currIndex]
 	currIndex++
-	dcid = input[currIndex : currIndex+uint16(destinationConnectionIDLength)]
-	currIndex += uint16(destinationConnectionIDLength)
+	dcid = input[currIndex : currIndex+uint64(destinationConnectionIDLength)]
+	currIndex += uint64(destinationConnectionIDLength)
 	sourceConnectionIDLength := input[currIndex]
 	currIndex++
-	currIndex += uint16(sourceConnectionIDLength)
+	currIndex += uint64(sourceConnectionIDLength)
 	tokenLengthBytes := getVariableLengthIntegerField(input, currIndex)
-	currIndex += uint16(len(tokenLengthBytes))
-	currIndex += uint16(convertBytesToInteger(tokenLengthBytes))
+	currIndex += uint64(len(tokenLengthBytes))
+	currIndex += uint64(convertBytesToInteger(tokenLengthBytes))
 	lengthBytes := getVariableLengthIntegerField(input, currIndex)
-	currIndex += uint16(len(lengthBytes))
+	currIndex += uint64(len(lengthBytes))
 	sampleStartIndex := currIndex + 4
-	sample = input[sampleStartIndex : sampleStartIndex+sampleLength]
-	return int64(currIndex), sample, dcid
-}
-
-func getVariableLengthIntegerField(input []byte, currIndex uint16) []byte {
-	// reference: https://www.rfc-editor.org/rfc/rfc9000#name-variable-length-integer-enc
-	twoMSB := input[currIndex] >> 6
-	switch twoMSB {
-	case 0:
-		return input[currIndex : currIndex+1]
-	case 1:
-		return input[currIndex : currIndex+2]
-	case 2:
-		return input[currIndex : currIndex+4]
-	case 3:
-		return input[currIndex : currIndex+8]
-	}
-
-	// never reach here
-	return []byte{}
-}
-
-func convertBytesToInteger(input []byte) uint64 {
-	var ret uint64
-	switch len(input) {
-	case 1:
-		ret = uint64(input[0])
-	case 2:
-		ret = uint64(int(binary.BigEndian.Uint16(input)))
-	case 4:
-		ret = uint64(int(binary.BigEndian.Uint32(input)))
-	case 8:
-		ret = uint64(int(binary.BigEndian.Uint64(input)))
-	}
-	return ret
+	sample = make([]byte, sampleLength)
+	copy(sample, input[sampleStartIndex:sampleStartIndex+sampleLength])
+	return uint64(currIndex), sample, dcid
 }
