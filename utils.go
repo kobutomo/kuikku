@@ -1,6 +1,8 @@
 package main
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+)
 
 func getVariableLengthIntegerField(input []byte, currIndex uint64) []byte {
 	// reference: https://www.rfc-editor.org/rfc/rfc9000#name-variable-length-integer-enc
