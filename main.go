@@ -56,15 +56,15 @@ func main() {
 
 	mask := getMask(tmpHPKey, tmpSample)
 
-	pnIndex := getPNIndexFromRawPacket(input2)
+	pnIndex := getPNIndexFromRawPacket(input)
 	// mask the header
-	input2[0] ^= mask[0] & 0x0f
-	input2[pnIndex] ^= mask[1]
-	input2[pnIndex+1] ^= mask[2]
-	input2[pnIndex+2] ^= mask[3]
-	input2[pnIndex+3] ^= mask[4]
+	input[0] ^= mask[0] & 0x0f
+	input[pnIndex] ^= mask[1]
+	input[pnIndex+1] ^= mask[2]
+	input[pnIndex+2] ^= mask[3]
+	input[pnIndex+3] ^= mask[4]
 
-	parsedPacket := parsePacket(input2)
+	parsedPacket := parsePacket(input)
 	fmt.Println(parsedPacket)
 
 }
@@ -105,7 +105,7 @@ func parsePacket(input []byte) InitialPacket {
 		reference: https://www.rfc-editor.org/rfc/rfc9000#name-initial-packet
 	*/
 	packet := InitialPacket{}
-	var currIndex uint8 = 0
+	var currIndex uint16 = 0
 	// input[0] are flags and would be like 1100_1100
 	packet.HeaderForm = input[currIndex] >> 7           // 1100_1100 >> 7 = 0000_0001
 	packet.FixedBit = (input[currIndex] >> 6) & 1       // 1100_1100 >> 6 = 0000_0011 & 0000_0001 = 0000_0001
@@ -120,56 +120,61 @@ func parsePacket(input []byte) InitialPacket {
 	currIndex += 4
 	packet.DestinationConnectionIDLength = input[currIndex]
 	currIndex++
-	packet.DestinationConnectionID = input[currIndex : currIndex+packet.DestinationConnectionIDLength]
-	currIndex += packet.DestinationConnectionIDLength
+	packet.DestinationConnectionID = input[currIndex : currIndex+uint16(packet.DestinationConnectionIDLength)]
+	currIndex += uint16(packet.DestinationConnectionIDLength)
 	packet.SourceConnectionIDLength = input[currIndex]
 	currIndex++
-	packet.SourceConnectionID = input[currIndex : currIndex+packet.SourceConnectionIDLength]
-	currIndex += packet.SourceConnectionIDLength
+	packet.SourceConnectionID = input[currIndex : currIndex+uint16(packet.SourceConnectionIDLength)]
+	currIndex += uint16(packet.SourceConnectionIDLength)
 	// byte[]
 	tokenLengthBytes := getVariableLengthIntegerField(input, currIndex)
 	// 0x3f = 0011_1111
 	// remove 2 most significant bits
 	tokenLengthBytes[0] &= 0x3f
 	packet.TokenLength = convertBytesToInteger(tokenLengthBytes)
-	currIndex += uint8(len(tokenLengthBytes))
-	packet.Token = input[currIndex : currIndex+uint8(packet.TokenLength)]
-	currIndex += uint8(packet.TokenLength)
+	currIndex += uint16(len(tokenLengthBytes))
+	packet.Token = input[currIndex : currIndex+uint16(packet.TokenLength)]
+	currIndex += uint16(packet.TokenLength)
 	lengthBytes := getVariableLengthIntegerField(input, currIndex)
 	// 0x3f = 0011_1111
 	// remove 2 most significant bits
 	lengthBytes[0] &= 0x3f
 	packet.Length = convertBytesToInteger(lengthBytes)
-	currIndex += uint8(len(lengthBytes))
+	currIndex += uint16(len(lengthBytes))
 	packet.PacketNumberIndex = uint64(currIndex)
-	packetNumberBytes := input[currIndex : currIndex+packet.PacketNumberLength]
+	packetNumberBytes := input[currIndex : currIndex+uint16(packet.PacketNumberLength)]
 	packet.PacketNumber = convertBytesToInteger(packetNumberBytes)
-	currIndex += packet.PacketNumberLength
-	packet.PacketPayload = input[currIndex:]
+	currIndex += uint16(packet.PacketNumberLength)
+	// this if statement is for debugging
+	if uint64(len(input[currIndex:])) > packet.Length-uint64(packet.PacketNumberLength) {
+		packet.PacketPayload = input[currIndex : currIndex+uint16(packet.Length)-uint16(packet.PacketNumberLength)]
+	} else {
+		packet.PacketPayload = input[currIndex:]
+	}
 	return packet
 }
 
 func getPNIndexFromRawPacket(input []byte) int64 {
 	packet := InitialPacket{}
-	var currIndex uint8 = 0
+	var currIndex uint16 = 0
 	currIndex++
 	currIndex += 4
 	packet.DestinationConnectionIDLength = input[currIndex]
 	currIndex++
-	currIndex += packet.DestinationConnectionIDLength
+	currIndex += uint16(packet.DestinationConnectionIDLength)
 	packet.SourceConnectionIDLength = input[currIndex]
 	currIndex++
-	currIndex += packet.SourceConnectionIDLength
+	currIndex += uint16(packet.SourceConnectionIDLength)
 	tokenLengthBytes := getVariableLengthIntegerField(input, currIndex)
-	currIndex += uint8(len(tokenLengthBytes))
-	currIndex += uint8(convertBytesToInteger(tokenLengthBytes))
+	currIndex += uint16(len(tokenLengthBytes))
+	currIndex += uint16(convertBytesToInteger(tokenLengthBytes))
 	lengthBytes := getVariableLengthIntegerField(input, currIndex)
-	currIndex += uint8(len(lengthBytes))
+	currIndex += uint16(len(lengthBytes))
 	packet.PacketNumberIndex = uint64(currIndex)
 	return int64(currIndex)
 }
 
-func getVariableLengthIntegerField(input []byte, currIndex uint8) []byte {
+func getVariableLengthIntegerField(input []byte, currIndex uint16) []byte {
 	// reference: https://www.rfc-editor.org/rfc/rfc9000#name-variable-length-integer-enc
 	twoMSB := input[currIndex] >> 6
 	switch twoMSB {
