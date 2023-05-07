@@ -2,10 +2,10 @@ package main
 
 import (
 	"crypto/sha256"
-	"encoding/binary"
 	"io"
 
 	"github.com/forgoer/openssl"
+	"golang.org/x/crypto/cryptobyte"
 	"golang.org/x/crypto/hkdf"
 )
 
@@ -20,18 +20,18 @@ func hkdfExpand(secret, hkdflabel []byte, length uint16) []byte {
 
 func hkdfExpandLabel(secret, label, ctx []byte, length uint16) []byte {
 	// create label
-	// add prefix
-	tlslabel := []byte(`tls13 `)
-	tlslabel = append(tlslabel, label...)
-	// add length
-	hkdflabel := make([]byte, 2)
-	binary.BigEndian.PutUint16(hkdflabel, length)
-	hkdflabel = append(hkdflabel, byte(len(tlslabel)))
-	hkdflabel = append(hkdflabel, tlslabel...)
-	hkdflabel = append(hkdflabel, byte(len(ctx)))
-	hkdflabel = append(hkdflabel, ctx...)
+	var hkdfLabel cryptobyte.Builder
+	hkdfLabel.AddUint16(uint16(length))
+	hkdfLabel.AddUint8LengthPrefixed(func(b *cryptobyte.Builder) {
+		b.AddBytes([]byte("tls13 "))
+		b.AddBytes([]byte(label))
+	})
+	hkdfLabel.AddUint8LengthPrefixed(func(b *cryptobyte.Builder) {
+		b.AddBytes(ctx)
+	})
+	hkdfLabelBytes, _ := hkdfLabel.Bytes()
 
-	return hkdfExpand(secret, hkdflabel, length)
+	return hkdfExpand(secret, hkdfLabelBytes, length)
 }
 
 func hkdfExtract(secret, salt []byte) []byte {

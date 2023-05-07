@@ -26,7 +26,7 @@ type InitialPacket struct {
 }
 
 func (ip InitialPacket) String() string {
-	var str = ""
+	var str = "================== PACKET =====================\n"
 	str += fmt.Sprintf("Header Form: %d\n", ip.HeaderForm)
 	str += fmt.Sprintf("Fixed Bit: %d\n", ip.FixedBit)
 	str += fmt.Sprintf("Long Packet Type: %d\n", ip.LongPacketType)
@@ -48,15 +48,10 @@ func (ip InitialPacket) String() string {
 
 func main() {
 	initialSalt, _ := hex.DecodeString("38762cf7f55934b34d179ae6a4c80cadccbb7f0a")
-	DCID, _ := hex.DecodeString("8394c8f03e515708")
+	pnIndex, sample, dcid := getRemoveHeaderProtectionInfoFromRawPacket(input)
+	_, _, hp := getClientKeys(dcid, initialSalt)
 
-	getKeys(initialSalt, DCID)
-	tmpHPKey, _ := hex.DecodeString("9f50449e04a0e810283a1e9933adedd2")
-	tmpSample, _ := hex.DecodeString("d1b1c98dd7689fb8ec11d242b123dc9b")
-
-	mask := getMask(tmpHPKey, tmpSample)
-
-	pnIndex := getPNIndexFromRawPacket(input)
+	mask := getMask(hp, sample)
 	// mask the header
 	input[0] ^= mask[0] & 0x0f
 	input[pnIndex] ^= mask[1]
@@ -65,22 +60,27 @@ func main() {
 	input[pnIndex+3] ^= mask[4]
 
 	parsedPacket := parsePacket(input)
+	fmt.Printf("pnIndex: %d\n", pnIndex)
+	fmt.Printf("sample: %x\n", sample)
+	fmt.Printf("mask: %x\n", mask)
 	fmt.Println(parsedPacket)
 
 }
 
-func getKeys(initialSalt, DCID []byte) (key, iv, hp []byte) {
-	initialSecret := hkdfExtract(initialSalt, DCID)
+// the keys protecting the client packets
+func getClientKeys(dcid, initialSalt []byte) (quicKey, quicIV, quicHP []byte) {
+	initialSecret := hkdfExtract(dcid, initialSalt)
 	clientInitialSecret := hkdfExpandLabel(initialSecret, []byte("client in"), []byte{}, 32)
-	key = hkdfExpandLabel(clientInitialSecret, []byte("quic key"), []byte{}, 16)
-	iv = hkdfExpandLabel(clientInitialSecret, []byte("quic iv"), []byte{}, 12)
-	hp = hkdfExpandLabel(clientInitialSecret, []byte("quic hp"), []byte{}, 16)
-	return key, iv, hp
-}
-
-func getSampleFromRawPacket(input []byte) []byte {
-	// TODO: implement
-	return []byte{}
+	quicKey = hkdfExpandLabel(clientInitialSecret, []byte("quic key"), []byte{}, 16)
+	quicIV = hkdfExpandLabel(clientInitialSecret, []byte("quic iv"), []byte{}, 12)
+	quicHP = hkdfExpandLabel(clientInitialSecret, []byte("quic hp"), []byte{}, 16)
+	fmt.Printf("dcid: %x\n", dcid)
+	fmt.Printf("initialSecret: %x\n", initialSecret)
+	fmt.Printf("clientInitialSecret: %x\n", clientInitialSecret)
+	fmt.Printf("quicKey: %x\n", quicKey)
+	fmt.Printf("quicIV: %x\n", quicIV)
+	fmt.Printf("quicHP: %x\n", quicHP)
+	return quicKey, quicIV, quicHP
 }
 
 func parsePacket(input []byte) InitialPacket {
@@ -154,24 +154,26 @@ func parsePacket(input []byte) InitialPacket {
 	return packet
 }
 
-func getPNIndexFromRawPacket(input []byte) int64 {
-	packet := InitialPacket{}
+func getRemoveHeaderProtectionInfoFromRawPacket(input []byte) (pnIndex int64, sample, dcid []byte) {
+	const sampleLength = 16
 	var currIndex uint16 = 0
 	currIndex++
 	currIndex += 4
-	packet.DestinationConnectionIDLength = input[currIndex]
+	destinationConnectionIDLength := input[currIndex]
 	currIndex++
-	currIndex += uint16(packet.DestinationConnectionIDLength)
-	packet.SourceConnectionIDLength = input[currIndex]
+	dcid = input[currIndex : currIndex+uint16(destinationConnectionIDLength)]
+	currIndex += uint16(destinationConnectionIDLength)
+	sourceConnectionIDLength := input[currIndex]
 	currIndex++
-	currIndex += uint16(packet.SourceConnectionIDLength)
+	currIndex += uint16(sourceConnectionIDLength)
 	tokenLengthBytes := getVariableLengthIntegerField(input, currIndex)
 	currIndex += uint16(len(tokenLengthBytes))
 	currIndex += uint16(convertBytesToInteger(tokenLengthBytes))
 	lengthBytes := getVariableLengthIntegerField(input, currIndex)
 	currIndex += uint16(len(lengthBytes))
-	packet.PacketNumberIndex = uint64(currIndex)
-	return int64(currIndex)
+	sampleStartIndex := currIndex + 4
+	sample = input[sampleStartIndex : sampleStartIndex+sampleLength]
+	return int64(currIndex), sample, dcid
 }
 
 func getVariableLengthIntegerField(input []byte, currIndex uint16) []byte {
