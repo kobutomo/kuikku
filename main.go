@@ -32,16 +32,16 @@ func (ip InitialPacket) String() string {
 	str += fmt.Sprintf("Long Packet Type: %d\n", ip.LongPacketType)
 	str += fmt.Sprintf("Reserved Bits: %d\n", ip.ReservedBits)
 	str += fmt.Sprintf("Packet Number Length: %d\n", ip.PacketNumberLength)
-	str += fmt.Sprintf("Version: %d\n", ip.Version)
+	str += fmt.Sprintf("Version: %d\n", binary.BigEndian.Uint32(ip.Version))
 	str += fmt.Sprintf("Destination Connection ID Length: %d\n", ip.DestinationConnectionIDLength)
-	str += fmt.Sprintf("Destination Connection ID: %d\n", ip.DestinationConnectionID)
+	str += fmt.Sprintf("Destination Connection ID: %x\n", ip.DestinationConnectionID)
 	str += fmt.Sprintf("Source Connection ID Length: %d\n", ip.SourceConnectionIDLength)
-	str += fmt.Sprintf("Source Connection ID: %d\n", ip.SourceConnectionID)
+	str += fmt.Sprintf("Source Connection ID: %x\n", ip.SourceConnectionID)
 	str += fmt.Sprintf("Token Length: %d\n", ip.TokenLength)
 	str += fmt.Sprintf("Token: %s\n", hex.EncodeToString(ip.Token))
 	str += fmt.Sprintf("Length: %d byte\n", ip.Length)
 	str += fmt.Sprintf("Packet Number: %d\n", ip.PacketNumber)
-	str += fmt.Sprintf("Packet Payload: %d\n", ip.PacketPayload)
+	str += fmt.Sprintf("Packet Payload: %x\n", ip.PacketPayload)
 
 	return str
 }
