@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/hex"
 	"fmt"
+
+	"github.com/kobutomo/kuikku/tls13"
 )
 
 type InitialPacket struct {
@@ -25,6 +27,13 @@ type InitialPacket struct {
 	RawHeader                     []byte
 }
 
+type Frame struct {
+	FrameType uint8
+	Offset    uint64
+	Length    uint64
+	Data      []byte
+}
+
 func (ip InitialPacket) String() string {
 	var str = "================== PACKET =====================\n"
 	str += "------------------- HEADER -------------------\n"
@@ -35,15 +44,24 @@ func (ip InitialPacket) String() string {
 	str += fmt.Sprintf("Packet Number Length: %d\n", ip.PacketNumberLength)
 	str += fmt.Sprintf("Version: %d\n", convertBytesToInteger(ip.Version))
 	str += fmt.Sprintf("Destination Connection ID Length: %d\n", ip.DestinationConnectionIDLength)
-	str += fmt.Sprintf("Destination Connection ID: %x\n", ip.DestinationConnectionID)
+	str += fmt.Sprintf("Destination Connection ID: %#x\n", ip.DestinationConnectionID)
 	str += fmt.Sprintf("Source Connection ID Length: %d\n", ip.SourceConnectionIDLength)
-	str += fmt.Sprintf("Source Connection ID: %x\n", ip.SourceConnectionID)
+	str += fmt.Sprintf("Source Connection ID: %#x\n", ip.SourceConnectionID)
 	str += fmt.Sprintf("Token Length: %d\n", ip.TokenLength)
 	str += fmt.Sprintf("Token: %s\n", hex.EncodeToString(ip.Token))
 	str += fmt.Sprintf("Length: %d byte\n", ip.Length)
 	str += fmt.Sprintf("Packet Number: %d\n", convertBytesToInteger(ip.PacketNumber))
 	str += "------------------ PAYLOAD ------------------\n"
-	str += fmt.Sprintf("%x\n", ip.PacketPayload)
+	str += fmt.Sprintf("%#x\n", ip.PacketPayload)
+
+	return str
+}
+
+func (cf Frame) String() string {
+	var str = ""
+	str += fmt.Sprintf("Frame Type: %#02x\n", cf.FrameType)
+	str += fmt.Sprintf("Offset: %d\n", cf.Offset)
+	str += fmt.Sprintf("Length: %d\n", cf.Length)
 
 	return str
 }
@@ -59,13 +77,50 @@ func main() {
 
 	parsedPacket := parsePacket(sampleImput)
 	fmt.Printf("pnIndex: %d\n", pnIndex)
-	fmt.Printf("sample: %x\n", sample)
-	fmt.Printf("mask: %x\n", mask)
+	fmt.Printf("sample: %#x\n", sample)
+	fmt.Printf("mask: %#x\n", mask)
 	fmt.Println(parsedPacket)
 	decryptedPacket := decryptPayload(parsedPacket.RawHeader, parsedPacket.PacketPayload, clientIV, clientKey, parsedPacket.PacketNumber)
 	fmt.Println("============= Decrypted Payload =============")
-	fmt.Printf("Hex: %x\n", decryptedPacket)
-	fmt.Printf("String: %s\n", decryptedPacket)
+	fmt.Printf("%#x\n", decryptedPacket)
+	fmt.Println("============= Frame =============")
+	frame := processFrame(decryptedPacket)
+	fmt.Print(frame)
+	hs := tls13.Handshake{}
+	hs.Unmarshal(frame.Data)
+	fmt.Print(hs)
+}
+
+func processFrame(packet []byte) *Frame {
+	frame := &Frame{}
+	var currentIndex uint64 = 0
+	// Frame Type
+	frame.FrameType = packet[currentIndex]
+	currentIndex++
+	// Offset
+	offsetBytes := getVariableLengthIntegerField(packet, currentIndex)
+	// 0x3f = 0011_1111
+	// remove 2 most significant bits
+	cpOffsetBytes := make([]byte, len(offsetBytes))
+	copy(cpOffsetBytes, offsetBytes)
+	cpOffsetBytes[0] &= 0x3f
+	frame.Offset = convertBytesToInteger(cpOffsetBytes)
+	currentIndex += uint64(len(cpOffsetBytes))
+
+	// Length
+	lengthBytes := getVariableLengthIntegerField(packet, currentIndex)
+	// 0x3f = 0011_1111
+	// remove 2 most significant bits
+	cpLengthBytes := make([]byte, len(lengthBytes))
+	copy(cpLengthBytes, lengthBytes)
+	cpLengthBytes[0] &= 0x3f
+	frame.Length = convertBytesToInteger(cpLengthBytes)
+	currentIndex += uint64(len(cpLengthBytes))
+
+	// Data
+	frame.Data = packet[currentIndex : currentIndex+frame.Length]
+
+	return frame
 }
 
 // this changes the input
@@ -97,9 +152,9 @@ func decryptPayload(header, payload, clientIV, clientKey, packetNumberBytes []by
 	aad := header
 	data := payload
 	plaintext := decryptAESGCM(clientKey, nonce, aad, data)
-	fmt.Printf("nonce: %x\n", nonce)
-	fmt.Printf("aad: %x\n", aad)
-	fmt.Printf("data: %x\n", data)
+	fmt.Printf("nonce: %#x\n", nonce)
+	fmt.Printf("aad: %#x\n", aad)
+	fmt.Printf("data: %#x\n", data)
 	return plaintext
 }
 
@@ -111,12 +166,12 @@ func getClientKeys(dcid, initialSalt []byte) (clientKey, clientIV, clientHP []by
 	clientKey = hkdfExpandLabel(clientInitialSecret, []byte("quic key"), []byte{}, 16)
 	clientIV = hkdfExpandLabel(clientInitialSecret, []byte("quic iv"), []byte{}, 12)
 	clientHP = hkdfExpandLabel(clientInitialSecret, []byte("quic hp"), []byte{}, 16)
-	fmt.Printf("dcid: %x\n", dcid)
-	fmt.Printf("initialSecret: %x\n", initialSecret)
-	fmt.Printf("clientInitialSecret: %x\n", clientInitialSecret)
-	fmt.Printf("clientKey: %x\n", clientKey)
-	fmt.Printf("clientIV: %x\n", clientIV)
-	fmt.Printf("clientHP: %x\n", clientHP)
+	fmt.Printf("dcid: %#x\n", dcid)
+	fmt.Printf("initialSecret: %#x\n", initialSecret)
+	fmt.Printf("clientInitialSecret: %#x\n", clientInitialSecret)
+	fmt.Printf("clientKey: %#x\n", clientKey)
+	fmt.Printf("clientIV: %#x\n", clientIV)
+	fmt.Printf("clientHP: %#x\n", clientHP)
 	return clientKey, clientIV, clientHP
 }
 
